@@ -38,28 +38,56 @@ class ReplicateGraph:
         if not inplace:
             graph = copy.deepcopy(graph)
         assert isinstance(graph, TensorGraph)
-        for from_, to_ in old_symbol_map_new_symbol.items():
-            if isinstance(from_, str):
-                from_ = sp.parse_expr(from_)
-            if isinstance(to_, str):
-                to_ = sp.parse_expr(to_)
-            for tensor in graph.tensors:
-                if not tensor.x1_shape is None:
-                    for i, dim in enumerate(tensor.x1_shape):
-                        tensor.x1_shape[i] = dim.replace(from_, to_)
-                if not tensor.x1_hidden is None:
-                    for i, dim in enumerate(tensor.x1_hidden):
-                        tensor.x1_hidden[i] = dim.replace(from_, to_)
-                if not tensor.x2_shape is None:
-                    for i, dim in enumerate(tensor.x2_shape):
-                        tensor.x2_shape[i] = dim.replace(from_, to_)
-                if not tensor.x2_hidden is None:
-                    for i, dim in enumerate(tensor.x2_hidden):
-                        tensor.x2_hidden[i] = dim.replace(from_, to_)
-                if tensor.op_type in {Slice.type_name, BroadcastReduce.type_name, Customized.type_name}:
-                    tensor.op_attr = tensor.op_attr.replace(
-                        f"{str(from_)}", f"({str(to_)})"
-                    )
+
+        sub_dict = {
+            sp.parse_expr(k) if isinstance(k, str) else k: 
+            sp.parse_expr(v) if isinstance(v, str) else v
+            for k, v in old_symbol_map_new_symbol.items()
+        }
+
+        for tensor in graph.tensors:
+            if tensor.x1_shape is not None:
+                tensor.x1_shape = [dim.subs(sub_dict) for dim in tensor.x1_shape]
+            if tensor.x1_hidden is not None:
+                tensor.x1_hidden = [dim.subs(sub_dict) for dim in tensor.x1_hidden]
+            if tensor.x2_shape is not None:
+                tensor.x2_shape = [dim.subs(sub_dict) for dim in tensor.x2_shape]
+            if tensor.x2_hidden is not None:
+                tensor.x2_hidden = [dim.subs(sub_dict) for dim in tensor.x2_hidden]
+
+            if tensor.op_attr is None:
+                continue
+
+            if tensor.op_type in {Slice.type_name, BroadcastReduce.type_name, Customized.type_name}:
+                # --- 这是修改的核心 ---
+                # 使用 if/else 结构确保特殊处理和通用处理是互斥的
+                if tensor.op_type == BroadcastReduce.type_name and "*" in tensor.op_attr:
+                    parts = tensor.op_attr.split("*", 1)
+                    if len(parts) == 2:
+                        axis_part, amplifier_part = parts
+                        try:
+                            amplifier_expr = sp.parse_expr(amplifier_part)
+                            new_amplifier_expr = amplifier_expr.subs(sub_dict)
+                            tensor.op_attr = f"{axis_part}*{str(new_amplifier_expr)}"
+                        except (sp.SympifyError, SyntaxError):
+                            new_amplifier_str = amplifier_part
+                            for from_, to_ in sub_dict.items():
+                                new_amplifier_str = new_amplifier_str.replace(str(from_), f"({str(to_)})")
+                            tensor.op_attr = f"{axis_part}*{new_amplifier_str}"
+                    # 如果 split 失败, 会自动落入下面的 else 块，这是正确的行为
+                else:
+                    # 通用处理逻辑，适用于 Slice, Customized, 以及不符合 "axis*amp" 格式的 BroadcastReduce
+                    try:
+                        expr = sp.parse_expr(tensor.op_attr)
+                        new_expr = expr.subs(sub_dict)
+                        tensor.op_attr = str(new_expr)
+                    except (sp.SympifyError, SyntaxError):
+                        attr_str = tensor.op_attr
+                        for from_, to_ in sub_dict.items():
+                            attr_str = attr_str.replace(str(from_), f"({str(to_)})")
+                        tensor.op_attr = attr_str
+                # --- 修改结束 ---
+                    
         return graph
 
     @classmethod

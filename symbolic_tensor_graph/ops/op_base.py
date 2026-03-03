@@ -29,13 +29,35 @@ class OPBase:
             Tensor.stringfy_shape(x2_hidden) if x2_hidden is not None else "None"
         )
         op_attr_str = op_attr if not op_attr is None else "None"
+        # print(f"cls.type_name: {cls.type_name}, {type(cls.type_name)}")
+        # print(f"x1_shape_str: {x1_shape_str}, {type(x1_shape_str)}")
+        # print(f"x2_shape_str: {x2_shape_str}, {type(x2_shape_str)}")
+        # print(f"x1_hidden_str: {x1_hidden_str}, {type(x1_hidden_str)}")
+        # print(f"x2_hidden_str: {x2_hidden_str}, {type(x2_hidden_str)}")
+        # print(f"op_attr_str: {op_attr_str}, {type(op_attr_str)}")
+        try:
+            x2_hidden_str = str(int(x2_hidden_str))
+        except:
+            x2_hidden_str = x2_hidden_str
+        
+        # print(f"x2_hidden_str: {x2_hidden_str}, {type(x2_hidden_str)}")
+        # print(f"DEBUG: cls={cls}, cls.__name__={cls.__name__}")
+        # print(f"DEBUG: cls.type_name={cls.type_name}, type(cls.type_name)={type(cls.type_name)}")
+        # print("DEBUG: About to execute assert...")
+        # assert type(cls.type_name) == str
+        # print("DEBUG: Assert passed!")
+        # assert type(x1_shape_str) == str
+        # assert type(x2_shape_str) == str
+        # assert type(x1_hidden_str) == str
+        # assert type(x2_hidden_str) == str
+        # print(f"DEBUG: About to create token with cls.type_name={cls.type_name}")
         token = (
             cls.type_name
             + x1_shape_str
             + x2_shape_str
             + x1_hidden_str
             + x2_hidden_str
-            + op_attr_str
+            + str(op_attr_str)
         )
         return token
 

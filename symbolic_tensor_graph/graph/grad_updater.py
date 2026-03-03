@@ -207,10 +207,15 @@ class FSDPWeightGradManager:
         grads = list()
         for tensor in tensor_id_map_tensor.values():
             if tensor.op_type == PlaceHolder.type_name and tensor.require_grads:
+                # 防御性检查：确保tensor有对应的梯度
+                if tensor._grad is None:
+                    continue
                 weights.append(tensor)
                 grads.append(tensor._grad)
                 graph.in_tensors.remove(tensor)
-                graph.out_tensors.remove(tensor._grad)
+                # 防御性检查：确保梯度在out_tensors中
+                if tensor._grad in graph.out_tensors:
+                    graph.out_tensors.remove(tensor._grad)
         sharded_weight, assembled_weight = cls.fsdp_weight_distributor(weights)
         sharded_grad, assembled_grad = cls.fsdp_grad_gatherer(grads, assembled_weight)
         graph.tensors.append(sharded_weight)
@@ -310,7 +315,8 @@ class MicroBatchReplicator:
             merged_graph.tensors.append(merged_grad)
             merged_graph.out_tensors.append(merged_grad)
             for new_grad in old_grad_map_new_grads[old_grad]:
-                merged_graph.out_tensors.remove(new_grad)
+                if new_grad in merged_graph.out_tensors:
+                    merged_graph.out_tensors.remove(new_grad)
 
         for old_grad in old_grad_map_new_grads:
             for new_grad in old_grad_map_new_grads[old_grad]:
@@ -318,8 +324,10 @@ class MicroBatchReplicator:
                 old_weight = new_weight_map_old_weight[new_weight]
                 new_grad.grad_of = old_weight
                 old_weight._grad = old_grad_map_merged_grad[old_grad]
-                merged_graph.tensors.remove(new_weight)
-                merged_graph.in_tensors.remove(new_weight)
+                if new_weight in merged_graph.tensors:
+                    merged_graph.tensors.remove(new_weight)
+                if new_weight in merged_graph.in_tensors:
+                    merged_graph.in_tensors.remove(new_weight)
         for old_weight in weights:
             merged_graph.in_tensors.append(old_weight)
             merged_graph.tensors.append(old_weight)

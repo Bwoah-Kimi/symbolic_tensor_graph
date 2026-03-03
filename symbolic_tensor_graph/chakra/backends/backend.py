@@ -56,6 +56,7 @@ class NodeBackendBase:
                 frontend_node.tensor_size,
                 frontend_node.op_type,
                 backend_node,
+                frontend_node, # MODIFICATION: Add M, N, K attributes for SCALE_Sim integration
             )
         elif frontend_node.node_type == FrontendNode.NodeType.MEM_LOAD_NODE:
             cls.set_mem_attrs(frontend_node.tensor_size, backend_node)

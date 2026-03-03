@@ -90,12 +90,53 @@ class Chakra004Backend(NodeBackendBase):
                 backend_node.ctrl_deps.append(dep)
 
     @classmethod
-    def set_comp_attrs(cls, num_ops, tensor_size, op_type, backend_node):
+    def set_comp_attrs(cls, num_ops, tensor_size, op_type, backend_node, frontend_node):
         backend_node.attr.append(ChakraAttr(name="num_ops", int64_val=int(num_ops)))
         backend_node.attr.append(
             ChakraAttr(name="tensor_size", uint64_val=int(tensor_size))
         )
         backend_node.attr.append(ChakraAttr(name="op_type", string_val=str(op_type)))
+
+        # ==== DEBUG: Print node info ====
+        print(f"[DEBUG] set_comp_attrs called for node: {backend_node.name}")
+        print(f"[DEBUG]   op_type: {op_type}")
+        print(f"[DEBUG]   frontend_node type: {type(frontend_node)}")
+        print(f"[DEBUG]   frontend_node attributes: {dir(frontend_node)}")
+    
+        # ==== BEGIN MODIFICATION: Add M, N, K attributes for SCALE-Sim integration ====
+        # Note: The 'node' object here is actually the `FrontendNode` object passed
+        # from HybridGraph, which is essentially the `comp_node` we modified earlier
+        # in convert_chakra.py.
+        # We assume that the `FrontendNode` (which maps to our Python `Node` in convert_chakra.py)
+        # has 'M', 'N', 'K' attributes if it's a MatMul op.
+        
+        # Check if the node is a MatMul operation
+        if hasattr(frontend_node, "is_matmul"):
+            is_matmul = frontend_node.is_matmul
+            matmul_attr = ChakraAttr(name="is_matmul", bool_val=is_matmul)
+            backend_node.attr.append(matmul_attr)
+        else:
+            raise ValueError(f"Node {backend_node.name} missing 'is_matmul' attribute")
+
+        # Check for M attribute
+        if hasattr(frontend_node, 'M'): # We pass num_ops as the first arg, but it contains a reference to the FrontendNode object. This is a bit of a hack, but it works with the current structure.
+                                 # A cleaner way would be to pass the entire FrontendNode object here.
+            m_attr = ChakraAttr(name="M", int32_val=int(frontend_node.M))
+            backend_node.attr.append(m_attr)
+
+        # Check for N attribute
+        if hasattr(frontend_node, 'N'):
+            n_attr = ChakraAttr(name="N", int32_val=int(frontend_node.N))
+            backend_node.attr.append(n_attr)
+
+        # Check for K attribute
+        if hasattr(frontend_node, 'K'):
+            k_attr = ChakraAttr(name="K", int32_val=int(frontend_node.K))
+            backend_node.attr.append(k_attr)
+
+        print(f"[DEBUG]   backend_node.attr length: {len(backend_node.attr)}")
+        # ==== END MODIFICATION ====
+
 
     @classmethod
     def set_coll_comm_attrs(cls, comm_size, comm_type, comm_group, backend_node):

@@ -111,9 +111,23 @@ class Tensor:
             )
 
         if not expr in target_eval_expr_cache:
-            target_eval_expr_cache[expr] = float(
-                expr.evalf(subs=target_symbol_value_dict)
-            )
+            try:
+                target_eval_expr_cache[expr] = float(
+                    expr.evalf(subs=target_symbol_value_dict)
+                )
+            except (TypeError, ValueError) as e:
+                print(f"DEBUG: Failed to evaluate expression: {expr}")
+                print(f"DEBUG: Expression type: {type(expr)}")
+                print(f"DEBUG: Symbols in expression: {expr.free_symbols}")
+                print(f"DEBUG: Symbol map values: {target_symbol_value_dict}")
+                
+                # Check for common problematic patterns
+                expr_str = str(expr)
+                if "Micro(" in expr_str and "MicroBatch" in expr_str:
+                    print(f"DEBUG: Detected problematic Micro(MicroBatch) pattern in: {expr_str}")
+                    print("DEBUG: This is likely caused by incorrect string replacement in ReplicateGraph")
+                    
+                raise e
         return target_eval_expr_cache[expr]
 
     @staticmethod

@@ -10,7 +10,6 @@ from .coll_comm_matcher import CommunicationMatcherV2
 from ..chakra.node import Node
 from ..ops import Shadow, Identical, PlaceHolder, Customized
 
-
 OPTIMIZED = os.environ.get("STAGE_OPTIMIZED", "1") == "1"
 
 class ConvertChakra:
@@ -94,6 +93,104 @@ class ConvertChakra:
             comp_node.tensor_size = tensor_size
             comp_node.y_tensor_size = y_tensor_size
             comp_node.op_type = tensor.op_type
+
+            # ==== BEGIN MODIFICATION: Print tensor dimensions for SCALE-Sim integration ====
+            def get_dims_with_meaning(shape):
+                if shape is None:
+                    return "None"
+                dims_str_parts = [
+                    f"{Tensor.stringfy_expr(dim)}: {int(Tensor.eval_expr(dim, symbol_map_value))}"
+                    for dim in shape
+                ]
+                return f"[{', '.join(dims_str_parts)}]"
+
+            def get_mnk_details(tensor):
+                if tensor.op_type != 'M' or not tensor.op_attr:
+                    return ""
+
+                try:
+                    inputs_str, output_str = tensor.op_attr.split('->')
+                    input1_e, input2_e = inputs_str.split(',')
+
+                    # Build a map from einsum char to symbolic dimension expression
+                    char_to_dim_expr = {}
+                    for char, dim_expr in zip(input1_e, tensor.x1_shape):
+                        char_to_dim_expr[char] = dim_expr
+                    for char, dim_expr in zip(input2_e, tensor.x2_shape):
+                        char_to_dim_expr[char] = dim_expr
+
+                    # Identify K, M, N dimensions based on einsum string
+                    k_chars = [c for c in input1_e if c in input2_e and c not in output_str]
+                    m_chars = [c for c in input1_e if c not in k_chars]
+                    n_chars = [c for c in input2_e if c not in k_chars]
+                    
+                    # Helper to calculate the final dimension size
+                    def calculate_dim(chars):
+                        val = 1
+                        for char in chars:
+                            val *= int(Tensor.eval_expr(char_to_dim_expr[char], symbol_map_value))
+                        return val
+
+                    M = calculate_dim(m_chars)
+                    N = calculate_dim(n_chars)
+                    K = calculate_dim(k_chars)
+                    
+                    # Get symbolic representation
+                    m_sym = '*'.join([Tensor.stringfy_expr(char_to_dim_expr[c]) for c in m_chars]) if m_chars else "1"
+                    n_sym = '*'.join([Tensor.stringfy_expr(char_to_dim_expr[c]) for c in n_chars]) if n_chars else "1"
+                    k_sym = '*'.join([Tensor.stringfy_expr(char_to_dim_expr[c]) for c in k_chars]) if k_chars else "1"
+
+                    return f"\n  - MatMul (M,N,K): ({M}, {N}, {K})" \
+                           f"\n    - M = {m_sym}" \
+                           f"\n    - N = {n_sym}" \
+                           f"\n    - K = {k_sym}"
+                except Exception as e:
+                    return f"\n  - Could not parse MNK for op_attr '{tensor.op_attr}': {e}"
+
+            # Print node information only if it's a compute operation
+            # if tensor.op_type != 'T' and tensor_ops > 0: # 'T' is a placeholder, skip it
+            #     print(f"--- Compute Node: {tensor.name} (Op: {tensor.op_type}) ---")
+            #     print(f"  - Input x1 Dims : {get_dims_with_meaning(tensor.x1_shape)}")
+            #     print(f"  - Input x2 Dims : {get_dims_with_meaning(tensor.x2_shape)}")
+            #     print(f"  - Output y Dims : {get_dims_with_meaning(tensor.y_shape)}{get_mnk_details(tensor)}")
+            #     print(f"  - Total Flops   : {tensor_ops:,.0f}")
+            #     print(f"  - Total Mem Vol : {tensor_size:,.0f} elements")
+
+            # Store whether the computation node is matmul
+            comp_node.is_matmul = (tensor.op_type == 'M' and tensor_ops > 0)
+            
+            if tensor.op_type == 'M' and tensor.op_attr:
+                try:
+                    inputs_str, output_str = tensor.op_attr.split('->')
+                    input1_e, input2_e = inputs_str.split(',')
+                    char_to_dim_expr = {}
+                    for char, dim_expr in zip(input1_e, tensor.x1_shape):
+                        char_to_dim_expr[char] = dim_expr
+                    for char, dim_expr in zip(input2_e, tensor.x2_shape):
+                        char_to_dim_expr[char] = dim_expr
+                    
+                    k_chars = [c for c in input1_e if c in input2_e and c not in output_str]
+                    m_chars = [c for c in input1_e if c not in k_chars]
+                    n_chars = [c for c in input2_e if c not in k_chars]
+                    
+                    def calculate_dim(chars):
+                        val = 1
+                        for char in chars:
+                            val *= int(Tensor.eval_expr(char_to_dim_expr[char], symbol_map_value))
+                        return val
+
+                    # Store M, N, K on the comp_node object
+                    comp_node.M = calculate_dim(m_chars)
+                    comp_node.N = calculate_dim(n_chars)
+                    comp_node.K = calculate_dim(k_chars)
+
+                except:
+                    # If parsing fails, ensure attributes do not exist
+                    if hasattr(comp_node, 'M'): del comp_node.M
+                    if hasattr(comp_node, 'N'): del comp_node.N
+                    if hasattr(comp_node, 'K'): del comp_node.K
+            # ==== END MODIFICATION ====
+
             nodes_this_tensor[HybridGraph.NodeType.COMP] = comp_node
 
     @classmethod
@@ -121,19 +218,38 @@ class ConvertChakra:
                 )
                 x1_comm_node = Node()
                 x1_comm_node.node_type = Node.NodeType.COLL_COMM_NODE
-                x1_comm_node.name = f"{tensor.id}_X1COMM"
-                x1_comm_node.comm_size = comm_size
-                x1_comm_node._comm_meta_data = comm
+                
+                # 添加更多信息到节点名称中
+                # 1. 通信类型
+                comm_type_str = ""
                 if comm[0] == CommunicationMatcherV2.CommType.ALL_REDUCE:
+                    comm_type_str = "AR"
                     x1_comm_node.comm_type = Node.CollectiveType.ALL_REDUCE
                 elif comm[0] == CommunicationMatcherV2.CommType.ALL_GATHER:
+                    comm_type_str = "AG"
                     x1_comm_node.comm_type = Node.CollectiveType.ALL_GATHER
                 elif comm[0] == CommunicationMatcherV2.CommType.ALL_TO_ALL:
+                    comm_type_str = "A2A"
                     x1_comm_node.comm_type = Node.CollectiveType.ALL_TO_ALL
                 elif comm[0] == CommunicationMatcherV2.CommType.REDUCE_SCATTER:
+                    comm_type_str = "RS"
                     x1_comm_node.comm_type = Node.CollectiveType.REDUCE_SCATTER
                 else:
                     assert False
+                
+                # 2. 并行维度简称
+                parallel_dim_str = str(parallel_dim)
+                
+                # 3. 并行规模
+                parallel_size = symbol_map_value[parallel_dim]
+                
+                # 4. 通信数据量（多少个元素，不包括位宽）
+                comm_size_kb = int(comm_size / 1024) if comm_size >= 1024 else 1
+                
+                # 组合名称：原名_通信类型_并行维度_规模_大小K_X1COMM
+                x1_comm_node.name = f"{tensor.id}_{comm_type_str}_{parallel_dim_str}_{parallel_size}_{comm_size_kb}K_X1COMM"
+                x1_comm_node.comm_size = comm_size
+                x1_comm_node._comm_meta_data = comm
                 if len(comm_nodes) > 0:
                     x1_comm_node.data_deps.append(comm_nodes[-1].id)
                 output_size = Tensor.eval_expr(
@@ -176,19 +292,38 @@ class ConvertChakra:
                 )
                 x2_comm_node = Node()
                 x2_comm_node.node_type = Node.NodeType.COLL_COMM_NODE
-                x2_comm_node.name = f"{tensor.id}_X2_COMM"
-                x2_comm_node.comm_size = comm_size
-                x2_comm_node._comm_meta_data = comm
+                
+                # 添加更多信息到节点名称中
+                # 1. 通信类型
+                comm_type_str = ""
                 if comm[0] == CommunicationMatcherV2.CommType.ALL_REDUCE:
+                    comm_type_str = "AR"
                     x2_comm_node.comm_type = Node.CollectiveType.ALL_REDUCE
                 elif comm[0] == CommunicationMatcherV2.CommType.ALL_GATHER:
+                    comm_type_str = "AG"
                     x2_comm_node.comm_type = Node.CollectiveType.ALL_GATHER
                 elif comm[0] == CommunicationMatcherV2.CommType.ALL_TO_ALL:
+                    comm_type_str = "A2A"
                     x2_comm_node.comm_type = Node.CollectiveType.ALL_TO_ALL
                 elif comm[0] == CommunicationMatcherV2.CommType.REDUCE_SCATTER:
+                    comm_type_str = "RS"
                     x2_comm_node.comm_type = Node.CollectiveType.REDUCE_SCATTER
                 else:
                     assert False
+                
+                # 2. 并行维度简称
+                parallel_dim_str = str(parallel_dim)
+                
+                # 3. 并行规模
+                parallel_size = symbol_map_value[parallel_dim]
+                
+                # 4. 通信数据量（K为单位）
+                comm_size_kb = int(comm_size / 1024) if comm_size >= 1024 else 1
+                
+                # 组合名称：原名_通信类型_并行维度_规模_大小K_X2COMM
+                x2_comm_node.name = f"{tensor.id}_{comm_type_str}_{parallel_dim_str}_{parallel_size}_{comm_size_kb}K_X2COMM"
+                x2_comm_node.comm_size = comm_size
+                x2_comm_node._comm_meta_data = comm
                 if len(comm_nodes) > 0:
                     x2_comm_node.data_deps.append(comm_nodes[-1].id)
                 output_size = Tensor.eval_expr(
@@ -325,7 +460,7 @@ class ConvertChakra:
     def _sanity_check(cls, tensor_graph, symbol_map_value, parallel_syms):
         assert isinstance(tensor_graph, TensorGraph)
         for symbol in tensor_graph.get_symbols():
-            assert symbol in symbol_map_value
+            assert symbol in symbol_map_value, f"Missing symbol in symbol_map_value: {symbol}"
         for parallel_sym in parallel_syms:
             assert parallel_sym in symbol_map_value
 
@@ -460,11 +595,22 @@ class BundledConvertChakra:
         ):
             node = Node()
             node.node_type = Node.NodeType.COMM_SEND_NODE
-            node.name = tensor.id + "_Y_SEND"
-            node.data_deps.append(cls._get_output_node(nodes_this_tensor).id)
-            node.comm_size = Tensor.eval_expr(
+            comm_size = Tensor.eval_expr(
                 Tensor.eval_size(tensor.y_shape), symbol_map_value
             )
+            
+            # 添加更多信息到节点名称中
+            # 1. 目标设备
+            dst_str = f"dst{dst_rank}"
+            
+            # 2. 通信数据量（K为单位）
+            comm_size_kb = int(comm_size / 1024) if comm_size >= 1024 else 1
+            
+            # 组合名称：原名_SEND_目标设备_大小K
+            node.name = f"{tensor.id}_SEND_{dst_str}_{comm_size_kb}K"
+            
+            node.data_deps.append(cls._get_output_node(nodes_this_tensor).id)
+            node.comm_size = comm_size
             node.comm_tag = tag
             node.comm_dst = dst_rank
             if not dst_readable_rank is None:
@@ -479,10 +625,21 @@ class BundledConvertChakra:
             assert tensor.op_type == Shadow.type_name
             node = Node()
             node.node_type = Node.NodeType.COMM_RECV_NODE
-            node.name = tensor.id + "_Y_RECV"
-            node.comm_size = Tensor.eval_expr(
+            comm_size = Tensor.eval_expr(
                 Tensor.eval_size(tensor.y_shape), symbol_map_value
             )
+            
+            # 添加更多信息到节点名称中
+            # 1. 源设备
+            src_str = f"src{src_rank}"
+            
+            # 2. 通信数据量
+            comm_size_kb = int(comm_size / 1024) if comm_size >= 1024 else 1
+            
+            # 组合名称：原名_RECV_源设备_大小K
+            node.name = f"{tensor.id}_RECV_{src_str}_{comm_size_kb}K"
+            
+            node.comm_size = comm_size
             node.comm_tag = tag
             node.comm_src = src_rank
             if not src_readable_rank is None:

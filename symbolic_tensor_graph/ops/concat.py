@@ -16,8 +16,8 @@ class Concat(OPBase):
         assert op_attr is not None
         
         dim = int(op_attr)
-        assert len(x1_shape) == len(x2_shape)
-        assert x1_hidden == x2_hidden
+        assert len(x1_shape) == len(x2_shape), f"Concat: rank must be the same, got {len(x1_shape)} and {len(x2_shape)}"
+        assert all(abs(a - b) < 1e-9 for a, b in zip(x1_hidden, x2_hidden)), f"Concat: hidden status must be the same, got {x1_hidden} and {x2_hidden}"
         
         if dim < 0:
             dim += len(x1_shape)

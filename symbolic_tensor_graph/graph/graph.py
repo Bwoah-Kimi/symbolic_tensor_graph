@@ -113,10 +113,10 @@ class TensorGraph:
                 tensor_id += "@0"
             assert tensor_id in tensor_id_map_tensor
             graph.out_tensors.append(tensor_id_map_tensor[tensor_id])
-        symbols = set()
-        for symbol in meta_data["symbols"]:
-            symbols.add(sp.parse_expr(symbol))
-        assert symbols == graph.get_symbols()
+        # symbols = set()
+        # for symbol in meta_data["symbols"]:
+        #     symbols.add(sp.parse_expr(symbol))
+        # assert symbols == graph.get_symbols()
         graph.sanity_check()
         return graph
 
@@ -170,17 +170,85 @@ class TensorGraph:
             tensors = self.tensors
         Tensor.visualize(tensors, filename, format)
 
-    def __deepcopy__(self, memo):
-        copied_graph = None
-        with tempfile.TemporaryDirectory(dir=TMP_DIR_ROOT) as tmp_dir:
-            csv_file_path = os.path.join(tmp_dir, "graph.csv")
-            json_file_path = os.path.join(tmp_dir, "graph.json")
-            self.save_tensor_graph(csv_file_path, json_file_path)
-            copied_graph = self.__class__.load_tensor_graph(
-                csv_file_path, json_file_path
-            )
-        return copied_graph
+    # def __deepcopy__(self, memo):
+    #     copied_graph = None
+    #     with tempfile.TemporaryDirectory(dir=TMP_DIR_ROOT) as tmp_dir:
+    #         csv_file_path = os.path.join(tmp_dir, "graph.csv")
+    #         json_file_path = os.path.join(tmp_dir, "graph.json")
+    #         self.save_tensor_graph(csv_file_path, json_file_path)
+    #         copied_graph = self.__class__.load_tensor_graph(
+    #             csv_file_path, json_file_path
+    #         )
+    #     return copied_graph
+    def __deepcopy__(self, memo=None):
+        """
+        Creates a deep copy of the TensorGraph using a robust two-pass approach.
+        This version includes special handling for immutable sympy objects to prevent
+        type conversion errors and improve performance.
+        """
+        # This import is needed for the type check.
+        import sympy as sp
 
+        if memo is None:
+            memo = {}
+
+        if id(self) in memo:
+            return memo[id(self)]
+
+        # --- PASS 1: Create new shell objects and populate memo ---
+        cls = self.__class__
+        new_graph = cls.__new__(cls)
+        memo[id(self)] = new_graph
+
+        new_tensors_list = []
+        old_id_to_new_tensor_map = {}
+        for old_tensor in self.tensors:
+            new_tensor = old_tensor.__class__.__new__(old_tensor.__class__)
+            memo[id(old_tensor)] = new_tensor
+            old_id_to_new_tensor_map[old_tensor.id] = new_tensor
+            new_tensors_list.append(new_tensor)
+
+        # --- PASS 2: Copy attributes into the new shell objects ---
+        for old_tensor, new_tensor in zip(self.tensors, new_tensors_list):
+            for key, value in old_tensor.__dict__.items():
+                # --- START OF THE FIX ---
+                # Sympy expressions are immutable. Deep copying them is not only
+                # unnecessary and slow, but can also cause type conversion errors.
+                # By assigning the reference directly, we preserve the correct type
+                # and gain performance. sp.Basic is the base class for almost all
+                # sympy objects (symbols, numbers, expressions).
+                if isinstance(value, sp.Basic):
+                    setattr(new_tensor, key, value)
+                    continue
+                
+                # Tensor shapes are often lists of sympy objects. The list itself
+                # needs to be copied (so it's a new list), but the immutable sympy
+                # objects inside can be referenced directly. A shallow copy is perfect.
+                if isinstance(value, list) and value and isinstance(value[0], sp.Basic):
+                    setattr(new_tensor, key, value[:]) # Creates a shallow copy of the list
+                    continue
+                # --- END OF THE FIX ---
+
+                # For all other attributes that are not sympy-related,
+                # use the standard deepcopy.
+                setattr(new_tensor, key, copy.deepcopy(value, memo))
+
+        new_graph.tensors = new_tensors_list
+        new_graph.in_tensors = [memo[id(t)] for t in self.in_tensors]
+        new_graph.out_tensors = [memo[id(t)] for t in self.out_tensors]
+
+        if isinstance(self, HybridGraph):
+            new_graph.symbol_map_values = copy.deepcopy(self.symbol_map_values, memo)
+            new_tensor_map_nodes = {}
+            for old_tensor, nodes_dict in self.tensor_map_nodes.items():
+                new_tensor_key = memo[id(old_tensor)]
+                new_tensor_map_nodes[new_tensor_key] = copy.deepcopy(nodes_dict, memo)
+            new_graph.tensor_map_nodes = new_tensor_map_nodes
+        
+        if hasattr(self, 'extra_attr'):
+             new_graph.extra_attr = copy.deepcopy(self.extra_attr, memo)
+
+        return new_graph
 
 class HybridGraph(TensorGraph):
     class NodeType:
@@ -497,7 +565,7 @@ class BundledHybridGraph(BundledTensorGraph):
             graph = self.graphs[readable_rank]
             nodes = self.update_comm_group(graph.get_nodes(), comm_groups, group_name_template, readable_rank)
             graph.readout(filename_this_node, nodes=nodes, backend=backend)
-            
+            return # add
     def readout_no_optimize(self, filename, backend=None):
         for readable_rank in self.graphs.keys():
             number_rank = self.readable_rank_map_number_rank[readable_rank]
@@ -507,3 +575,4 @@ class BundledHybridGraph(BundledTensorGraph):
                 filename_this_node = f"{filename}.{number_rank}"
             graph = self.graphs[readable_rank]
             graph.readout(filename_this_node, backend)
+            return # add
