@@ -15,9 +15,5 @@
 experiment
 generated
 sharding_spreadsheets/.cache/
-
-# Keep curated STG artifacts used by stg_lut.csv index.
-!iteration_generated/
-!iteration_generated/**
-!results/
-!results/**
+iteration_generated/
+stg_lut.csv
